@@ -6,4 +6,5 @@ const router = express.Router()
 
 router.post('/validateFace', Middleware.file, Controller.validateFace)
 
+console.log(Middleware.file)
 module.exports = router
