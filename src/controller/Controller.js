@@ -1,10 +1,9 @@
-
 const express = require('express');
 const multer = require('multer');
 const faceapi = require('face-api.js');
 const canvas = require('canvas');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises;
 const Jimp = require('jimp');
 
 const { Canvas, Image, ImageData, loadImage } = canvas;
@@ -16,7 +15,7 @@ let labeledFaceDescriptors;
 
 async function loadModels() {
   await Promise.all([
-    faceapi.nets.ssdMobilenetv1.loadFromDisk(MODELS_URL),
+    faceapi.nets.tinyFaceDetector.loadFromDisk(MODELS_URL),
     faceapi.nets.faceLandmark68Net.loadFromDisk(MODELS_URL),
     faceapi.nets.faceRecognitionNet.loadFromDisk(MODELS_URL)
   ]);
@@ -39,30 +38,24 @@ const validateFace = async (req, res) => {
   }
 
   try {
-    const imagePath = req.file.path;
-    if (!fs.existsSync(imagePath)) {
-      return res.status(400).json({ message: 'Arquivo de imagem não encontrado' });
-    }
-
-    const img = await Jimp.read(imagePath);
+    const imageBuffer = await fs.readFile(req.file.path);
+    const img = await Jimp.read(imageBuffer);
     img.resize(250, Jimp.AUTO);
-    const resizedImagePath = path.join(__dirname, '../uploads', `resized-${Date.now()}.jpg`);
-    await img.writeAsync(resizedImagePath);
+    const resizedBuffer = await img.getBufferAsync(Jimp.MIME_JPEG);
 
-    const image = await loadImage(resizedImagePath);
-    console.log(`Imagem enviada carregada: ${resizedImagePath}`);
-    const detections = await faceapi.detectAllFaces(image).withFaceLandmarks().withFaceDescriptors();
+    const image = await loadImage(resizedBuffer);
+    console.log('Imagem enviada carregada');
+    const detections = await faceapi.detectAllFaces(image, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptors();
+
     console.log(`Detecções encontradas: ${detections.length}`);
 
-    fs.unlinkSync(imagePath);
-    fs.unlinkSync(resizedImagePath);
+    await fs.unlink(req.file.path);
 
     if (detections.length === 0) {
       return res.status(400).json({ message: 'Nenhum rosto detectado na imagem' });
     }
 
     const faceMatcher = new faceapi.FaceMatcher(labeledFaceDescriptors, 0.6);
-
     const results = detections.map(d => faceMatcher.findBestMatch(d.descriptor));
 
     results.forEach(result => {
@@ -71,7 +64,7 @@ const validateFace = async (req, res) => {
 
     const bestMatch = results.find(result => result.label !== 'unknown');
     if (bestMatch) {
-      return res.status(200).json({ label: bestMatch.label });
+      return res.status(200).json({ nome: bestMatch.label });
     }
 
     return res.status(200).json({ message: 'Nenhum rosto correspondente encontrado' });
@@ -88,18 +81,14 @@ async function loadLabeledImages() {
       const descriptions = [];
       for (let i = 1; i <= 1; i++) {
         const imgPath = path.join(__dirname, `../../image/${label}/${i}.jpg`);
-        if (!fs.existsSync(imgPath)) {
-          console.error(`Imagem não encontrada: ${imgPath}`);
-          continue;
-        }
-        console.log(`Imagem carregada: ${imgPath} - Rotulada: ${label}`);
-        const img = await loadImage(imgPath);
-        const detection = await faceapi.detectSingleFace(img).withFaceLandmarks().withFaceDescriptor();
-        if (detection && detection.descriptor) {
-          descriptions.push(detection.descriptor);
-          console.log(`Descritor para ${label}: ${detection.descriptor}`);
-        } else {
-          console.log(`Nenhuma detecção para ${label} em ${imgPath}`);
+        try {
+          const img = await loadImage(imgPath);
+          const detection = await faceapi.detectSingleFace(img, new faceapi.TinyFaceDetectorOptions()).withFaceLandmarks().withFaceDescriptor();
+          if (detection) {
+            descriptions.push(detection.descriptor);
+          }
+        } catch (err) {
+          console.error(`Erro ao carregar imagem: ${imgPath}`, err);
         }
       }
       return new faceapi.LabeledFaceDescriptors(label, descriptions);
